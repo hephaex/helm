@@ -35,6 +35,10 @@
 (declare-function org-content "org.el")
 (declare-function org-mark-ring-goto "org.el")
 (declare-function org-mark-ring-push "org.el")
+(declare-function helm-interpret-value "helm.el")
+(declare-function helm-get-current-source "helm.el")
+(defvar helm-sources)
+(defvar helm-initial-frame)
 (defvar helm-current-position)
 (defvar wdired-old-marks)
 (defvar helm-persistent-action-display-window)
@@ -443,12 +447,30 @@ The usage is the same as `cond'."
              (helm-acond ,@(cdr clauses))))))))
 
 (defmacro helm-aand (&rest conditions)
-  "Anaphoric version of `and'."
+  "Anaphoric version of `and'.
+Each condition is bound to a temporary variable called `it' which is
+usable in next condition."
   (declare (debug (&rest form)))
   (cond ((null conditions) t)
         ((null (cdr conditions)) (car conditions))
         (t `(helm-aif ,(car conditions)
                 (helm-aand ,@(cdr conditions))))))
+
+(defmacro helm-acase (expr &rest clauses)
+  "A simple anaphoric `cl-case' implementation handling strings.
+EXPR is bound to a temporary variable called `it' which is usable in
+CLAUSES to refer to EXPR.
+NOTE: Duplicate keys in CLAUSES are deliberately not handled."
+  (declare (indent 1) (debug t))
+  (unless (null clauses)
+    (let ((clause1 (car clauses)))
+      `(let ((key ',(car clause1))
+             (it ,expr))
+         (if (or (equal it key)
+                 (eq key t)
+                 (and (listp key) (member it key)))
+             (progn ,@(cdr clause1))
+           (helm-acase it ,@(cdr clauses)))))))
 
 ;;; Fuzzy matching routines
 ;;

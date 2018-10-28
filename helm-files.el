@@ -540,7 +540,7 @@ NOTE that `helm-list-dir-external' needs ls and awk as dependencies."
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map helm-map)
     (define-key map (kbd "<C-return>")    'helm-cr-empty-string)
-    (define-key map (kbd "<M-RET>")       'helm-cr-empty-string)
+    (define-key map (kbd "M-RET")         'helm-cr-empty-string)
     (define-key map (kbd "C-]")           'helm-ff-run-toggle-basename)
     (define-key map (kbd "C-.")           'helm-find-files-up-one-level)
     (define-key map (kbd "C-l")           'helm-find-files-up-one-level)
@@ -1455,7 +1455,8 @@ This doesn't replace inside the files, only modify filenames."
     (setq helm-ff--deleting-char-backward t)
     (call-interactively
      (lookup-key (current-global-map)
-                 (read-kbd-macro "DEL")))))
+                 (read-kbd-macro "DEL")))
+    (helm--update-header-line)))
 (put 'helm-ff-delete-char-backward 'helm-only t)
 
 (defun helm-ff-delete-char-backward--exit-fn ()
@@ -1467,8 +1468,9 @@ This doesn't replace inside the files, only modify filenames."
 See `helm-ff-RET' for details.
 If MUST-MATCH is specified exit with
 `helm-confirm-and-exit-minibuffer' which handle must-match mechanism."
-  (let ((cands (helm-marked-candidates))
-        (sel   (helm-get-selection)))
+  (let* ((cands (helm-marked-candidates))
+         (sel   (car cands)))
+    (cl-assert sel nil "Trying to exit with no candidates")
     (if (and (not (cdr cands))
              (file-directory-p sel)
              (not (string= "." (helm-basename sel))))
@@ -2449,14 +2451,14 @@ transformer."
                   ;; that we need an extra step to remove the quotes
                   ;; at the end which impact performances.
                   "ls -A -1 -F -b -Q | awk -v dir=%s '{print dir $1}'"
-                  default-directory)
+                  (shell-quote-argument default-directory))
                  nil t nil)
                 0)
         (goto-char (point-min))
         (save-excursion
           (while (re-search-forward "[*=@|/>]$" nil t)
             ;; A line looks like /home/you/"foo"@
-            (pcase (match-string 0)
+            (helm-acase (match-string 0)
               ("*" (replace-match "")
                    (put-text-property
                     (point-at-bol) (point-at-eol) 'helm-ff-exe t))
@@ -2466,7 +2468,7 @@ transformer."
               ("/" (replace-match "")
                    (put-text-property
                     (point-at-bol) (point-at-eol) 'helm-ff-dir t))
-              ((or "=" "|" ">") (replace-match "")))))
+              (("=" "|" ">") (replace-match "")))))
         (while (re-search-forward "[\"]" nil t)
           (replace-match ""))
         (add-text-properties (point-min) (point-max) '(helm-ff-file t))
@@ -3471,6 +3473,8 @@ Use it for non--interactive calls of `helm-find-files'."
     (unless helm-source-find-files
       (setq helm-source-find-files (helm-make-source
                                     "Find Files" 'helm-source-ffiles)))
+    (when (helm-attr 'follow helm-source-find-files)
+      (helm-attrset 'follow -1 helm-source-find-files))
     (helm-ff-setup-update-hook)
     (add-hook 'helm-resume-after-hook 'helm-ff--update-resume-after-hook)
     (unwind-protect
@@ -3881,9 +3885,9 @@ is nil."
                ;; is a bug).
                (if (or helm-ff-allow-recursive-deletes trash)
                    (delete-directory file 'recursive trash)
-                 (pcase (helm-read-answer (format "Recursive delete of `%s'? [y,n,!,q]"
-                                                 (abbreviate-file-name file))
-                                         '("y" "n" "!" "q"))
+                 (helm-acase (helm-read-answer (format "Recursive delete of `%s'? [y,n,!,q]"
+                                                      (abbreviate-file-name file))
+                                              '("y" "n" "!" "q"))
                    ("y" (delete-directory file 'recursive trash))
                    ("!" (setq helm-ff-allow-recursive-deletes t)
                          (delete-directory file 'recursive trash))
@@ -4389,7 +4393,8 @@ This is the starting point for nearly all actions you can do on files."
   (let* ((hist            (and arg helm-ff-history (helm-find-files-history nil)))
          (smart-input     (or hist (helm-find-files-initial-input)))
          (default-input   (expand-file-name (helm-current-directory)))
-         (input           (cond (helm-find-files-ignore-thing-at-point
+         (input           (cond ((and (null hist)
+                                      helm-find-files-ignore-thing-at-point)
                                  default-input)
                                 ((and (eq major-mode 'org-agenda-mode)
                                       org-directory

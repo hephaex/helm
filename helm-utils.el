@@ -422,8 +422,9 @@ Default is `helm-current-buffer'."
 Animation is used unless NOANIM is non--nil."
   (helm-log-run-hook 'helm-goto-line-before-hook)
   (helm-match-line-cleanup)
-  (with-helm-current-buffer
-    (unless helm-yank-point (setq helm-yank-point (point))))
+  (unless helm-alive-p
+    (with-helm-current-buffer
+      (unless helm-yank-point (setq helm-yank-point (point)))))
   (goto-char (point-min))
   (helm-goto-char (point-at-bol lineno))
   (unless noanim
@@ -601,9 +602,9 @@ KBSIZE is a floating point number, defaulting to `helm-default-kbsize'."
            while (>= (cdr result) kbsize)
            do (setq result (cons i (/ (cdr result) kbsize)))
            finally return
-           (pcase (car result)
-             (`"B" (format "%s" size))
-             (suffix (format "%.1f%s" (cdr result) suffix)))))
+           (helm-acase (car result)
+             ("B" (format "%s" size))
+             (t (format "%.1f%s" (cdr result) it)))))
 
 (cl-defun helm-file-attributes
     (file &key type links uid gid access-time modif-time
@@ -755,7 +756,9 @@ Inlined here for compatibility."
          (end (or end (1+ (line-end-position))))
          start-match end-match
          (args (list start end buf))
-         (case-fold-search (helm-set-case-fold-search)))
+         (case-fold-search (if helm-alive-p
+                               (helm-set-case-fold-search)
+                             case-fold-search)))
     ;; Highlight the current line.
     (if (not helm-match-line-overlay)
         (setq helm-match-line-overlay (apply 'make-overlay args))

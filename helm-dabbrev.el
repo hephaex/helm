@@ -96,10 +96,31 @@ but the initial search for all candidates in buffer(s)."
           (const :tag "Respect case" nil)
           (other :tag "Smart" 'smart)))
 
+(defcustom helm-dabbrev-use-thread nil
+  "[EXPERIMENTAL] Compute candidates asynchronously (partially) when non nil.
+
+The idea is to compute candidates while cycling the first ones, so
+this is available only if `helm-dabbrev-cycle-threshold' is not 0 or
+nil, also it is available only on emacs-26+ (needs threads).
+
+This is reasonably working when you don't have to complete a huge list
+of candidates, otherwise you will have a small delay after the first cycle
+because thread is released unexpectedly when helm-dabbrev exit after
+first insertion.
+
+IOW keep `helm-dabbrev-candidates-number-limit' to a reasonable
+value (I don't!) and give enough prefix before completing e.g. for
+completing \"helm-dabbrev\" use \"helm-d\" and not \"he\" if you want
+to use this."
+  :group 'helm-dabbrev
+  :type 'boolean)
+
 (defvaralias 'helm-dabbrev--regexp 'helm-dabbrev-separator-regexp)
-(make-obsolete-variable 'helm-dabbrev--regexp 'helm-dabbrev-separator-regexp "2.8.3")
+(make-obsolete-variable 'helm-dabbrev--regexp
+                        'helm-dabbrev-separator-regexp "2.8.3")
 ;; Check for beginning of line should happen last (^\n\\|^). 
-(defvar helm-dabbrev-separator-regexp "\\s-\\|\t\\|[(\\[\\{\"'`=<$;,@.#+]\\|\\s\\\\|^\n\\|^"
+(defvar helm-dabbrev-separator-regexp
+  "\\s-\\|\t\\|[(\\[\\{\"'`=<$;,@.#+]\\|\\s\\\\|^\n\\|^"
   "Regexp matching the start of a dabbrev candidate.")
 
 
@@ -160,37 +181,38 @@ but the initial search for all candidates in buffer(s)."
                                   pattern pbeg replace-regexp)))
                 (when (and match-word (not (member match-word result)))
                   (push match-word result)))))))
-    (cl-loop for buf in (if all (helm-dabbrev--buffer-list)
-                          (list (current-buffer)))
-             do (with-current-buffer buf
-                  (when (or minibuf ; check against all buffers when in minibuffer.
-                            (if helm-dabbrev-related-buffer-fn
-                                (funcall helm-dabbrev-related-buffer-fn buffer1)
-                              t))
-                    (save-excursion
-                      ;; Start searching before thing before point.
-                      (goto-char (- (point) (length str)))
-                      ;; Search the last 30 lines before point.
-                      (funcall search-and-store str -2)) ; store pos [1]
-                    (save-excursion
-                      ;; Search the next 30 lines after point.
-                      (funcall search-and-store str 2)) ; store pos [2]
-                    (save-excursion
-                      ;; Search all before point.
-                      ;; If limit is reached in previous call of
-                      ;; search-and-store pos-before is never set and
-                      ;; goto-char will fail, so check it.
-                      (when pos-before
-                        (goto-char pos-before) ; start from [1]
-                        (funcall search-and-store str -1)))
-                    (save-excursion
-                      ;; Search all after point.
-                      ;; Same comment as above for pos-after.
-                      (when pos-after
-                        (goto-char pos-after) ; start from [2]
-                        (funcall search-and-store str 1)))))
-             when (>= (length result) limit) return (nreverse result)
-             finally return (nreverse result))))
+    (catch 'break
+      (dolist (buf (if all (helm-dabbrev--buffer-list)
+                     (list (current-buffer))))
+        (with-current-buffer buf
+          (when (or minibuf ; check against all buffers when in minibuffer.
+                    (if helm-dabbrev-related-buffer-fn
+                        (funcall helm-dabbrev-related-buffer-fn buffer1)
+                      t))
+            (save-excursion
+              ;; Start searching before thing before point.
+              (goto-char (- (point) (length str)))
+              ;; Search the last 30 lines before point.
+              (funcall search-and-store str -2)) ; store pos [1]
+            (save-excursion
+              ;; Search the next 30 lines after point.
+              (funcall search-and-store str 2)) ; store pos [2]
+            (save-excursion
+              ;; Search all before point.
+              ;; If limit is reached in previous call of
+              ;; search-and-store pos-before is never set and
+              ;; goto-char will fail, so check it.
+              (when pos-before
+                (goto-char pos-before)  ; start from [1]
+                (funcall search-and-store str -1)))
+            (save-excursion
+              ;; Search all after point.
+              ;; Same comment as above for pos-after.
+              (when pos-after
+                (goto-char pos-after)   ; start from [2]
+                (funcall search-and-store str 1)))))
+        (when (>= (length result) limit) (throw 'break nil))))
+    (nreverse result)))
 
 (defun helm-dabbrev--search (pattern beg sep-regexp)
   "Search word or symbol at point matching PATTERN.
@@ -239,8 +261,10 @@ removed."
 (cl-defun helm-dabbrev ()
   "Preconfigured helm for dynamic abbreviations."
   (interactive)
-  (let ((dabbrev (helm-thing-before-point nil helm-dabbrev-separator-regexp))
-        (limits (helm-bounds-of-thing-before-point helm-dabbrev-separator-regexp))
+  (let ((dabbrev (helm-thing-before-point
+                  nil helm-dabbrev-separator-regexp))
+        (limits (helm-bounds-of-thing-before-point
+                 helm-dabbrev-separator-regexp))
         (enable-recursive-minibuffers t)
         (cycling-disabled-p (or (null helm-dabbrev-cycle-threshold)
                                 (zerop helm-dabbrev-cycle-threshold)))
@@ -262,25 +286,8 @@ removed."
     ;; thread here.
     (when cycling-disabled-p
       (setq helm-dabbrev--cache (helm-dabbrev--get-candidates dabbrev)))
-    ;; The idea here is to compute only the candidates needed to cycle
-    ;; and while cycling, compute the whole list in background with a
-    ;; thread so that user doesn't have to wait candidates are ready
-    ;; at startup.
     (unless (or cycling-disabled-p
                 (helm-dabbrev-info-p helm-dabbrev--data))
-      ;; FIXME: For some reason the thread is blocking after the first
-      ;; insertion and we have to wait the function building cache
-      ;; finish before insertion of second candidate, why? Is is an
-      ;; emacs bug? This is reproductible when the limit is high and
-      ;; helm is collecting a huge list of candidates.
-      (if (fboundp 'make-thread)
-          (setq helm-dabbrev--current-thread
-                (make-thread
-                 (lambda ()
-                   (setq helm-dabbrev--cache
-                         (helm-dabbrev--get-candidates dabbrev)))))
-        (setq helm-dabbrev--cache
-              (helm-dabbrev--get-candidates dabbrev)))
       (setq helm-dabbrev--data
             (make-helm-dabbrev-info
              :dabbrev dabbrev
@@ -291,7 +298,19 @@ removed."
                                  dabbrev helm-dabbrev-cycle-threshold)
                        when (string-match-p
                              (concat "^" (regexp-quote dabbrev)) i)
-                       collect i)))))
+                       collect i))))
+      ;; Thread is released as soon as helm-dabbrev exits after first
+      ;; insertion so this is unusable for now, keep it like this for
+      ;; now hooping the situation with threads will be improved in
+      ;; emacs. The idea is to compute whole list of candidates in
+      ;; background while cycling with the first
+      ;; helm-dabbrev-cycle-threshold ones.
+      (when (and (fboundp 'make-thread) helm-dabbrev-use-thread)
+        (setq helm-dabbrev--current-thread
+              (make-thread
+               (lambda ()
+                 (setq helm-dabbrev--cache
+                       (helm-dabbrev--get-candidates dabbrev)))))))
     (let ((iter (and (helm-dabbrev-info-p helm-dabbrev--data)
                      (helm-dabbrev-info-iterator helm-dabbrev--data)))
           deactivate-mark)
@@ -311,7 +330,12 @@ removed."
                                 (helm-dabbrev-info-dabbrev helm-dabbrev--data)
                               dabbrev))
                (only-one (null (cdr (all-completions
-                                     old-dabbrev helm-dabbrev--already-tried)))))
+                                     old-dabbrev
+                                     helm-dabbrev--already-tried)))))
+          (unless helm-dabbrev-use-thread
+            (message "Waiting for helm-dabbrev candidates...")
+            (setq helm-dabbrev--cache
+                  (helm-dabbrev--get-candidates old-dabbrev)))
           ;; If the length of candidates is only one when computed
           ;; that's mean the unique matched item have already been
           ;; inserted by the iterator, so no need to reinsert the old dabbrev,
@@ -325,6 +349,7 @@ removed."
           ;; Cycling is finished, block until helm-dabbrev--cache have
           ;; finished to complete.
           (when (and (fboundp 'thread-join)
+                     helm-dabbrev-use-thread
                      (thread-alive-p helm-dabbrev--current-thread))
             (thread-join helm-dabbrev--current-thread))
           (when (and (null cycling-disabled-p) only-one)
@@ -332,16 +357,20 @@ removed."
               (message "[Helm-dabbrev: No expansion found]")))
           (with-helm-show-completion (car limits) (cdr limits)
             (unwind-protect
-                 (helm :sources (helm-build-in-buffer-source "Dabbrev Expand"
-                                  :data (cl-loop for cand in helm-dabbrev--cache
-                                                 unless (member cand helm-dabbrev--already-tried)
-                                                 collect cand into lst
-                                                 finally return (append lst helm-dabbrev--already-tried))
-                                  :persistent-action 'ignore
-                                  :persistent-help "DoNothing"
-                                  :keymap helm-dabbrev-map
-                                  :action 'helm-dabbrev-default-action
-                                  :group 'helm-dabbrev)
+                 (helm :sources
+                       (helm-build-in-buffer-source "Dabbrev Expand"
+                         :data
+                         (cl-loop for cand in helm-dabbrev--cache
+                                  unless
+                                  (member cand helm-dabbrev--already-tried)
+                                  collect cand into lst
+                                  finally return
+                                  (append lst helm-dabbrev--already-tried))
+                         :persistent-action 'ignore
+                         :persistent-help "DoNothing"
+                         :keymap helm-dabbrev-map
+                         :action 'helm-dabbrev-default-action
+                         :group 'helm-dabbrev)
                        :buffer "*helm dabbrev*"
                        :input (concat "^" dabbrev " ")
                        :resume 'noresume

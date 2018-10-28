@@ -28,6 +28,7 @@
 (declare-function helm-buffer-list "helm-buffers")
 (declare-function View-quit "view")
 (declare-function doc-view-goto-page "doc-view" (page))
+(declare-function pdf-view-goto-page "pdf-view" (page &optional window))
 (declare-function helm-mm-split-pattern "helm-multi-match")
 (declare-function helm--ansi-color-apply "helm-lib")
 (defvar helm--ansi-color-regexp)
@@ -145,7 +146,8 @@ e.g In Ubuntu you can set it to:
 
     \"evince --page-label=%p '%f'\"
 
-If set to nil `doc-view-mode' will be used instead of an external command."
+If set to nil either `doc-view-mode' or `pdf-view-mode' will be used
+instead of an external command."
   :group 'helm-grep
   :type  'string)
 
@@ -614,7 +616,9 @@ WHERE can be one of other-window, other-frame."
       (grep         (helm-grep-save-results-1))
       (pdf          (if helm-pdfgrep-default-read-command
                         (helm-pdfgrep-action-1 split lineno (car split))
-                      (find-file (car split)) (doc-view-goto-page lineno)))
+                      (find-file (car split)) (if (derived-mode-p 'pdf-view-mode)
+                                                  (pdf-view-goto-page lineno)
+                                                (doc-view-goto-page lineno))))
       (t            (find-file fname)))
     (unless (or (eq where 'grep) (eq where 'pdf))
       (helm-goto-line lineno))
@@ -1434,10 +1438,10 @@ When TYPE is specified it is one of what returns `helm-grep-ag-get-types'
 if available with current AG version."
   (let* ((patterns (helm-mm-split-pattern pattern t))
          (pipe-switches (mapconcat 'identity helm-grep-ag-pipe-cmd-switches " "))
-         (pipe-cmd (pcase (helm-grep--ag-command)
-                     ((and com (or "ag" "pt"))
-                      (format "%s -S --color%s" com (concat " " pipe-switches)))
-                     (`"rg" (format "rg -N -S --color=always%s"
+         (pipe-cmd (helm-acase (helm-grep--ag-command)
+                     (("ag" "pt")
+                      (format "%s -S --color%s" it (concat " " pipe-switches)))
+                     ("rg" (format "rg -N -S --color=always%s"
                                     (concat " " pipe-switches)))))
          (cmd (format helm-grep-ag-command
                       (mapconcat 'identity type " ")
